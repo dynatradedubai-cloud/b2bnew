@@ -62,28 +62,29 @@ if "parts" not in st.session_state:
     st.session_state.parts = None
 
 # ---------------------------------------------------------
-# DATA LOADING
+# DATA LOADING (CSV ONLY)
 # ---------------------------------------------------------
 @st.cache_data
-def load_parts_from_excel(path: str):
-    df = pd.read_excel(path)
-    # Expecting columns similar to your sample; adjust names if needed
-    # Brand, Manufacturing, Part Number, Vehicle, OE, Part Description, Stock, Unit Price (AED)
-    df = df.rename(columns={
-        "Manufacturing": "Manufacturing Part Number",
-        "Part Number": "OE Part Number" if "OE" in df.columns else "Part Number"
-    })
+def load_parts_from_csv(path: str):
+    df = pd.read_csv(path)
+    # Normalize column names if needed
+    rename_map = {}
+    if "Manufacturing" in df.columns:
+        rename_map["Manufacturing"] = "Manufacturing Part Number"
+    if "Part Number" in df.columns and "OE Part Number" not in df.columns:
+        rename_map["Part Number"] = "OE Part Number"
+    if rename_map:
+        df = df.rename(columns=rename_map)
     return df
 
 def get_parts_df():
     if st.session_state.parts is not None:
         return st.session_state.parts
     try:
-        df = load_parts_from_excel("parts_list.xlsx")  # put your 50k+ file here
+        df = load_parts_from_csv("parts_list.csv")  # your 50k+ CSV file
         st.session_state.parts = df
         return df
     except Exception:
-        # fallback sample data for testing
         df = pd.DataFrame([
             ["BOSCH","A000000001066","DAIMLER AG","000000001066","SEAL RING,FUEL LINES-AXOR",3,2.11],
             ["FEBI","A000000001073","DAIMLER AG","000000001073","SEAL RING, OIL DRAIN PLUG",10,2.32],
@@ -102,7 +103,7 @@ col_h1, col_h2 = st.columns([6, 2])
 with col_h1:
     st.markdown(
         "<div class='header-bar'>"
-        "<div class='header-title'>DYNATRADE AUTOMOTIVE LLC</div>"
+        "<div class='header-title'>DYNATRade AUTOMOTIVE LLC</div>"
         "<div class='header-subtitle'>Spare Parts Ordering Portal</div>"
         "</div>",
         unsafe_allow_html=True
@@ -131,7 +132,10 @@ def add_to_cart(selected_rows: pd.DataFrame):
     cart = st.session_state.cart.copy()
     for _, row in selected_rows.iterrows():
         key_cols = ["Brand", "Manufacturing Part Number", "Vehicle", "OE Part Number"]
-        mask = (cart[key_cols] == row[key_cols]).all(axis=1) if not cart.empty else pd.Series([], dtype=bool)
+        if cart.empty:
+            mask = pd.Series([], dtype=bool)
+        else:
+            mask = (cart[key_cols] == row[key_cols]).all(axis=1)
         if mask.any():
             idx = cart[mask].index[0]
             cart.loc[idx, "Qty"] += row["Qty"]
@@ -158,7 +162,6 @@ def cart_totals():
 if mode == "Customer Portal":
     left, right = st.columns([7, 3])
 
-    # LEFT: SEARCH + RESULTS
     with left:
         st.markdown("<div class='search-card'>", unsafe_allow_html=True)
         st.markdown("### Search Parts")
@@ -183,13 +186,13 @@ if mode == "Customer Portal":
             brand_filter = vehicle_filter = part_no_filter = desc_filter = ""
         if search_clicked:
             if brand_filter:
-                df = df[df["Brand"].str.contains(brand_filter, case=False, na=False)]
+                df = df[df["Brand"].astype(str).str.contains(brand_filter, case=False, na=False)]
             if vehicle_filter:
-                df = df[df["Vehicle"].str.contains(vehicle_filter, case=False, na=False)]
+                df = df[df["Vehicle"].astype(str).str.contains(vehicle_filter, case=False, na=False)]
             if part_no_filter:
                 df = df[df["OE Part Number"].astype(str).str.contains(part_no_filter, case=False, na=False)]
             if desc_filter:
-                df = df[df["Part Description"].str.contains(desc_filter, case=False, na=False)]
+                df = df[df["Part Description"].astype(str).str.contains(desc_filter, case=False, na=False)]
 
         st.markdown("### Search Results")
 
@@ -210,15 +213,12 @@ if mode == "Customer Portal":
             if not to_add.empty:
                 add_to_cart(to_add)
 
-    # RIGHT: CART
     with right:
         st.markdown("### Cart")
 
-        c_cart1, c_cart2 = st.columns([1, 1])
+        c_cart1, _ = st.columns([1, 1])
         with c_cart1:
             st.button("🗑 Clear Cart", on_click=clear_cart)
-        with c_cart2:
-            st.empty()
 
         cart_df = st.session_state.cart.copy()
         if cart_df.empty:
@@ -250,8 +250,8 @@ if mode == "Customer Portal":
                 )
             body_text = "%0D%0A".join(body_lines)
             mailto_link = f"mailto:sales@dynatrade.com?subject=Parts%20Cart&body={body_text}"
-
             st.link_button("📧 Send to Salesman (Email)", mailto_link)
+
             wa_text = body_text.replace("%0D%0A", "%0A")
             wa_link = f"https://wa.me/971XXXXXXXXX?text={wa_text}"
             st.link_button("🟢 Send via WhatsApp", wa_link)
@@ -266,11 +266,12 @@ if mode == "Admin Portal":
 
     with tab1:
         st.markdown("### Upload / Replace Parts List")
-        st.write("Upload your master parts file (Excel) with 50,000+ SKUs.")
-        uploaded = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
+        st.write("Upload your master parts file (CSV only). Excel is not supported here.")
+
+        uploaded = st.file_uploader("Upload CSV file", type=["csv"])
         if uploaded is not None:
             try:
-                df_new = pd.read_excel(uploaded)
+                df_new = pd.read_csv(uploaded)
                 st.session_state.parts = df_new
                 st.success(f"Uploaded and loaded {len(df_new):,} parts.")
             except Exception as e:
