@@ -104,6 +104,64 @@ with right:
         "🟢 Send via WhatsApp",
         "https://wa.me/971XXXXXXXXX?text=Cart%20details%20attached"
     )
+# ---------------------------------------------------------
+# THEME / CSS
+# ---------------------------------------------------------
+st.markdown("""
+<style>
+
+    /* Global font */
+    html, body, [class*="css"]  {
+        font-family: 'Segoe UI', sans-serif;
+    }
+
+    /* Header title color */
+    h2 {
+        color: #004080 !important;
+        font-weight: 700 !important;
+    }
+
+    /* Table header styling */
+    thead tr th {
+        background-color: #004080 !important;
+        color: white !important;
+        font-weight: 600 !important;
+        text-align: center !important;
+        padding: 6px !important;
+    }
+
+    /* Table row striping */
+    tbody tr:nth-child(even) {
+        background-color: #F8F8F8 !important;
+    }
+
+    tbody tr:nth-child(odd) {
+        background-color: #FFFFFF !important;
+    }
+
+    /* Buttons */
+    .stButton>button {
+        background-color: #004080 !important;
+        color: white !important;
+        border-radius: 6px !important;
+        padding: 8px 16px !important;
+        border: none !important;
+    }
+
+    /* Secondary buttons (Clear Cart, Remove, etc.) */
+    .stButton>button:hover {
+        opacity: 0.9 !important;
+    }
+
+    /* Card background */
+    .search-card {
+        background-color: #F5F5F5;
+        padding: 15px;
+        border-radius: 8px;
+    }
+
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # FOOTER
