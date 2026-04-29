@@ -7,7 +7,7 @@ import numpy as np
 # ---------------------------------------------------------
 st.set_page_config(page_title="Dynatrade Automotive LLC", layout="wide")
 
-# Default admin credentials (change before production)
+# Change these before production
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "Dyn@1234"
 
@@ -32,6 +32,7 @@ tbody tr:nth-child(odd) { background-color:#FFFFFF !important; }
 .stLinkButton>a:hover { background-color:#003366 !important; }
 .footer { text-align:center;color:grey;margin-top:30px;font-size:13px; }
 .small-muted { color: #6c757d; font-size:12px; }
+.result-row { padding:8px 0; border-bottom:1px solid #eee; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,8 +48,17 @@ if "cart" not in st.session_state:
 if "parts" not in st.session_state:
     st.session_state.parts = None
 
+if "customers" not in st.session_state:
+    st.session_state.customers = None
+
 if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
+
+if "customer_logged_in" not in st.session_state:
+    st.session_state.customer_logged_in = False
+
+if "customer_company" not in st.session_state:
+    st.session_state.customer_company = ""
 
 # ---------------------------------------------------------
 # HELPERS: CLEANING, LOADING, VALIDATION
@@ -106,22 +116,38 @@ def get_parts_df() -> pd.DataFrame:
         return df
 
 # ---------------------------------------------------------
-# HEADER
+# HEADER (logo + title + logout for customer)
 # ---------------------------------------------------------
 col_h1, col_h2 = st.columns([6, 2])
 with col_h1:
+    # try to show logo if present
+    try:
+        st.image("dynatrade_logo.png", width=60)
+    except Exception:
+        pass
     st.markdown(
-        "<div class='header-bar'>"
+        "<div style='display:inline-block;vertical-align:top;margin-left:8px;'>"
         "<div class='header-title'>DYNATRADE AUTOMOTIVE LLC</div>"
         "<div class='header-subtitle'>Spare Parts Ordering Portal</div>"
         "</div>",
         unsafe_allow_html=True
     )
 with col_h2:
-    st.markdown(
-        "<div style='text-align:right;'><span class='small-muted'>Welcome, AL NOOR GARAGE</span></div>",
-        unsafe_allow_html=True
-    )
+    if st.session_state.customer_logged_in:
+        st.markdown(
+            "<div style='text-align:right;'>"
+            f"<div class='small-muted'>Logged in: {st.session_state.customer_company}</div>"
+            "<div style='margin-top:6px;'><button style='background:#D9534F;color:white;border:none;padding:6px 10px;border-radius:6px;' id='logout_btn'>Logout</button></div>"
+            "</div>",
+            unsafe_allow_html=True
+        )
+        # Logout handling via a simple button below (since inline HTML button won't trigger)
+        if st.button("Logout"):
+            st.session_state.customer_logged_in = False
+            st.session_state.customer_company = ""
+    else:
+        st.markdown("<div style='text-align:right;'><span class='small-muted'>Not logged in</span></div>", unsafe_allow_html=True)
+
 st.markdown("<hr>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
@@ -130,27 +156,34 @@ st.markdown("<hr>", unsafe_allow_html=True)
 mode = st.sidebar.radio("Select View", ["Customer Portal", "Admin Portal"])
 
 # ---------------------------------------------------------
-# CART LOGIC
+# CART HELPERS
 # ---------------------------------------------------------
-def add_to_cart(selected_rows: pd.DataFrame):
-    if selected_rows.empty:
+def add_to_cart_row(row: dict, qty: int):
+    if qty <= 0:
         return
     cart = st.session_state.cart.copy()
-    for _, row in selected_rows.iterrows():
-        key_cols = ["Brand", "Manufacturing Part Number", "Vehicle", "OE Part Number"]
-        if cart.empty:
-            mask = pd.Series([], dtype=bool)
-        else:
-            mask = (cart[key_cols] == row[key_cols]).all(axis=1)
-        if mask.any():
-            idx = cart[mask].index[0]
-            cart.loc[idx, "Qty"] += int(row["Qty"])
-            cart.loc[idx, "Total (AED)"] = cart.loc[idx, "Qty"] * cart.loc[idx, "Unit Price (AED)"]
-        else:
-            new_row = row.copy()
-            new_row["Qty"] = int(new_row.get("Qty", 0))
-            new_row["Total (AED)"] = new_row["Qty"] * new_row["Unit Price (AED)"]
-            cart = pd.concat([cart, pd.DataFrame([new_row])], ignore_index=True)
+    key_cols = ["Brand", "Manufacturing Part Number", "Vehicle", "OE Part Number"]
+    if cart.empty:
+        mask = pd.Series([], dtype=bool)
+    else:
+        mask = (cart[key_cols] == pd.Series(row)[key_cols]).all(axis=1)
+    if mask.any():
+        idx = cart[mask].index[0]
+        cart.loc[idx, "Qty"] += int(qty)
+        cart.loc[idx, "Total (AED)"] = cart.loc[idx, "Qty"] * cart.loc[idx, "Unit Price (AED)"]
+    else:
+        new_row = {
+            "Brand": row["Brand"],
+            "Manufacturing Part Number": row["Manufacturing Part Number"],
+            "Vehicle": row["Vehicle"],
+            "OE Part Number": row["OE Part Number"],
+            "Part Description": row["Part Description"],
+            "Stock": int(row.get("Stock", 0)),
+            "Unit Price (AED)": float(row.get("Unit Price (AED)", 0.0)),
+            "Qty": int(qty),
+            "Total (AED)": int(qty) * float(row.get("Unit Price (AED)", 0.0))
+        }
+        cart = pd.concat([cart, pd.DataFrame([new_row])], ignore_index=True)
     st.session_state.cart = cart
 
 def clear_cart():
@@ -164,54 +197,101 @@ def cart_totals():
     return items, total
 
 # ---------------------------------------------------------
-# CUSTOMER PORTAL (Single search box)
+# CUSTOMER PORTAL
 # ---------------------------------------------------------
 if mode == "Customer Portal":
-    left, right = st.columns([7, 3])
+    st.markdown("## Customer Portal")
 
-    with left:
-        st.markdown("<div class='search-card'>", unsafe_allow_html=True)
-        st.markdown("### Search Parts")
-        query = st.text_input("Search Part Number / OE / Description / Brand / Vehicle")
-        search_btn = st.button("Search")
-        clear_btn = st.button("Clear")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        df = get_parts_df().copy()
-        if clear_btn:
-            query = ""
-
+    # Customer login area (uses customers list uploaded by admin)
+    if not st.session_state.customer_logged_in:
+        st.markdown("### Customer Login")
+        with st.form("customer_login", clear_on_submit=False):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Login")
+            if submitted:
+                # validate against uploaded customers list
+                cust_df = st.session_state.customers
+                if cust_df is None:
+                    st.error("No customer list available. Ask admin to upload customers CSV in Admin Portal.")
+                else:
+                    # simple match
+                    match = cust_df[
+                        (cust_df["Username"].astype(str) == str(username)) &
+                        (cust_df["Password"].astype(str) == str(password))
+                    ]
+                    if not match.empty:
+                        st.session_state.customer_logged_in = True
+                        st.session_state.customer_company = match.iloc[0]["Company"]
+                        st.success(f"Logged in as {st.session_state.customer_company}")
+                    else:
+                        st.error("Invalid username or password.")
+        st.markdown("<div class='small-muted'>If you don't have credentials, contact your Dynatrade admin.</div>", unsafe_allow_html=True)
+    else:
+        # Logged in: show single search box only (no default listing)
+        st.markdown(f"### Welcome, **{st.session_state.customer_company}**")
+        st.markdown("Search parts by Part Number, OE Number, Description, Brand, or Vehicle.")
+        query = st.text_input("Search Part Number / OE / Description / Brand / Vehicle", key="cust_search_box")
+        search_clicked = st.button("Search")
+        # Only show results after search clicked or query non-empty
+        results_df = pd.DataFrame()
         if query and query.strip() != "":
+            df = get_parts_df().copy()
             q = query.strip().lower()
-            df = df[df.apply(lambda r:
+            mask = df.apply(lambda r:
                 q in str(r.get("Manufacturing Part Number", "")).lower() or
                 q in str(r.get("OE Part Number", "")).lower() or
                 q in str(r.get("Part Description", "")).lower() or
                 q in str(r.get("Brand", "")).lower() or
                 q in str(r.get("Vehicle", "")).lower()
-            , axis=1)]
+            , axis=1)
+            results_df = df[mask].copy()
+        elif search_clicked:
+            st.info("Enter a search term to find parts.")
+        # Display results only if results_df not empty
+        if not results_df.empty:
+            st.markdown(f"**Showing {len(results_df):,} results (showing first 100)**")
+            # limit to first 100 for performance
+            display_df = results_df.head(100).reset_index(drop=True)
+            # For each row, render a compact row with fields, qty input and Add button
+            for i, row in display_df.iterrows():
+                cols = st.columns([1.2,1.6,1,1,1,0.8,0.8])
+                with cols[0]:
+                    st.write(row["Brand"])
+                with cols[1]:
+                    st.write(row["Part Description"])
+                with cols[2]:
+                    st.write(row["Manufacturing Part Number"])
+                with cols[3]:
+                    st.write(row["OE Part Number"])
+                with cols[4]:
+                    st.write(row["Vehicle"])
+                with cols[5]:
+                    qty_key = f"qty_{i}"
+                    qty_val = st.number_input("", min_value=0, max_value=int(row.get("Stock", 999999)), value=0, key=qty_key)
+                with cols[6]:
+                    btn_key = f"add_{i}"
+                    if st.button("Add", key=btn_key):
+                        if qty_val <= 0:
+                            st.warning("Enter quantity > 0 to add.")
+                        else:
+                            add_to_cart_row(row.to_dict(), int(qty_val))
+                            st.success(f"Added {int(qty_val)} x {row['Manufacturing Part Number']} to cart.")
+            st.markdown("---")
+        else:
+            st.info("No results to display. Use the search box above to find parts.")
 
-        st.markdown("### Search Results")
-        if "Qty" not in df.columns:
-            df["Qty"] = 0
-        edited = st.data_editor(df, use_container_width=True, key="search_editor")
-        st.caption("Set Qty > 0 for lines you want to add to cart, then click 'Add Selected to Cart'.")
-
-        if st.button("🛒 Add Selected to Cart"):
-            to_add = edited[edited["Qty"] > 0].copy()
-            if not to_add.empty:
-                add_to_cart(to_add)
-
-    with right:
-        st.markdown("### Cart")
-        st.button("🗑 Clear Cart", on_click=clear_cart)
+        # Right side cart summary (rendered below search for simplicity)
+        st.markdown("### Your Cart")
+        if st.button("🗑 Clear Cart"):
+            clear_cart()
         cart_df = st.session_state.cart.copy()
         if cart_df.empty:
             st.info("Cart is empty.")
         else:
             cart_df_display = cart_df.copy()
             cart_df_display["Qty"] = cart_df_display["Qty"].astype(int)
-            st.data_editor(cart_df_display, use_container_width=True, disabled=True)
+            st.dataframe(cart_df_display, use_container_width=True)
         items, total = cart_totals()
         st.markdown(f"**Items: {items} | Cart Total: AED {total:,.2f}**")
         if not cart_df.empty:
@@ -219,7 +299,7 @@ if mode == "Customer Portal":
             body_lines = []
             for _, r in cart_df.iterrows():
                 body_lines.append(
-                    f"{r['Brand']} | {r['Manufacturing Part Number']} | {r['Vehicle']} | {r['OE Part Number']} | {r['Part Description']} | Qty: {int(r['Qty'])} | Total: AED {r['Total (AED)']:.2f}"
+                    f"{r['Brand']} | {r['Manufacturing Part Number']} | {r['Part Description']} | Qty: {int(r['Qty'])} | Total: AED {r['Total (AED)']:.2f}"
                 )
             body_text = "%0D%0A".join(body_lines)
             st.link_button("📧 Send to Salesman (Email)", f"mailto:sales@dynatrade.com?subject=Parts%20Cart&body={body_text}")
@@ -227,11 +307,10 @@ if mode == "Customer Portal":
             st.link_button("🟢 Send via WhatsApp", f"https://wa.me/971XXXXXXXXX?text={wa_text}")
 
 # ---------------------------------------------------------
-# ADMIN PORTAL (requires login)
+# ADMIN PORTAL
 # ---------------------------------------------------------
 if mode == "Admin Portal":
     st.markdown("## Admin Portal")
-
     if not st.session_state.admin_logged_in:
         st.markdown("### Admin Login")
         with st.form("admin_login", clear_on_submit=False):
@@ -241,45 +320,66 @@ if mode == "Admin Portal":
             if submitted:
                 if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
                     st.session_state.admin_logged_in = True
-                    st.success("Logged in as admin.")
+                    st.success("Admin logged in.")
                 else:
-                    st.error("Invalid credentials. Change defaults in app.py before production.")
+                    st.error("Invalid admin credentials.")
         st.markdown("<div class='small-muted'>Default admin credentials: admin / Dyn@1234 (change before production)</div>", unsafe_allow_html=True)
     else:
-        tab1, tab2, tab3 = st.tabs(["Upload / Manage Parts", "View Parts List", "Dashboard"])
-
+        tab1, tab2, tab3 = st.tabs(["Upload / Manage", "View Parts", "Dashboard"])
         with tab1:
-            st.markdown("### Upload / Replace Parts List (CSV only)")
+            st.markdown("### Upload Parts CSV")
             st.write("Required columns: Brand, Manufacturing Part Number, Vehicle, OE Part Number, Part Description, Stock, Unit Price (AED)")
-            uploaded = st.file_uploader("Upload CSV file", type=["csv"])
+            uploaded = st.file_uploader("Upload parts CSV", type=["csv"])
             if uploaded is not None:
                 try:
                     df_new = pd.read_csv(uploaded, encoding="latin1", encoding_errors="ignore")
                     df_new = clean_df(df_new)
-                    # Basic validation
+                    # normalize column names if needed
+                    rename_map = {}
+                    if "Manufacturing" in df_new.columns:
+                        rename_map["Manufacturing"] = "Manufacturing Part Number"
+                    if "Part Number" in df_new.columns and "OE Part Number" not in df_new.columns:
+                        rename_map["Part Number"] = "OE Part Number"
+                    if rename_map:
+                        df_new = df_new.rename(columns=rename_map)
                     required = ["Brand","Manufacturing Part Number","Vehicle","OE Part Number","Part Description","Stock","Unit Price (AED)"]
                     missing = [c for c in required if c not in df_new.columns]
                     if missing:
                         st.error(f"Missing columns: {missing}")
                     else:
-                        # normalize numeric columns
                         df_new["Stock"] = pd.to_numeric(df_new["Stock"], errors="coerce").fillna(0).astype(int)
                         df_new["Unit Price (AED)"] = pd.to_numeric(df_new["Unit Price (AED)"], errors="coerce").fillna(0.0)
                         st.session_state.parts = df_new
-                        st.success(f"Uploaded and loaded {len(df_new):,} parts.")
+                        st.success(f"Loaded {len(df_new):,} parts into memory.")
                 except Exception as e:
                     st.error(f"Error reading file: {e}")
 
+            st.markdown("### Upload Customers CSV (for customer login)")
+            st.write("Required columns: Company, Username, Password")
+            cust_file = st.file_uploader("Upload customers CSV", type=["csv"], key="cust_upload")
+            if cust_file is not None:
+                try:
+                    cust_df = pd.read_csv(cust_file, encoding="latin1", encoding_errors="ignore")
+                    cust_df = clean_df(cust_df)
+                    required_c = ["Company","Username","Password"]
+                    missing_c = [c for c in required_c if c not in cust_df.columns]
+                    if missing_c:
+                        st.error(f"Missing customer columns: {missing_c}")
+                    else:
+                        st.session_state.customers = cust_df[required_c].copy()
+                        st.success(f"Loaded {len(cust_df):,} customers.")
+                except Exception as e:
+                    st.error(f"Error reading customers file: {e}")
+
             if st.button("Logout Admin"):
                 st.session_state.admin_logged_in = False
-                st.success("Logged out.")
+                st.success("Admin logged out.")
 
         with tab2:
             st.markdown("### Parts List (first 100 rows)")
             df = get_parts_df()
             st.write(f"Total parts in memory: {len(df):,}")
             st.dataframe(df.head(100), use_container_width=True)
-            st.caption("If your CSV is large, upload via the Upload tab. The app keeps the list in memory for fast search.")
 
         with tab3:
             st.markdown("### Dashboard")
@@ -303,3 +403,4 @@ if mode == "Admin Portal":
 # ---------------------------------------------------------
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div class='footer'>© Dynatrade Automotive Group – B2B Customer Portal</div>", unsafe_allow_html=True)
+
