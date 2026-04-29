@@ -1,5 +1,129 @@
 import streamlit as st
 import pandas as pd
+# ---------------------------------------------------------
+# GLOBAL THEME / CSS FOR DYNATRADE PORTAL
+# ---------------------------------------------------------
+st.markdown("""
+<style>
+
+    /* GLOBAL FONT */
+    html, body, [class*="css"] {
+        font-family: 'Segoe UI', sans-serif;
+    }
+
+    /* HEADER BAR */
+    .header-bar {
+        background-color: #004080;
+        padding: 12px 20px;
+        border-radius: 6px;
+        color: white;
+    }
+
+    .header-title {
+        font-size: 26px;
+        font-weight: 700;
+        margin-bottom: -5px;
+        color: white !important;
+    }
+
+    .header-subtitle {
+        font-size: 13px;
+        color: #d9e6ff !important;
+        margin-top: -5px;
+    }
+
+    .header-right {
+        text-align: right;
+        color: white !important;
+        font-size: 14px;
+    }
+
+    .header-right a {
+        color: #ffcccc !important;
+        text-decoration: none;
+        font-weight: 600;
+    }
+
+    /* SEARCH CARD */
+    .search-card {
+        background-color: #F5F5F5;
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #E0E0E0;
+    }
+
+    /* TABLE HEADER */
+    thead tr th {
+        background-color: #004080 !important;
+        color: white !important;
+        font-weight: 600 !important;
+        text-align: center !important;
+        padding: 6px !important;
+        border-bottom: 2px solid #003366 !important;
+    }
+
+    /* TABLE ROW STRIPING */
+    tbody tr:nth-child(even) {
+        background-color: #F8F8F8 !important;
+    }
+
+    tbody tr:nth-child(odd) {
+        background-color: #FFFFFF !important;
+    }
+
+    /* PRIMARY BUTTONS */
+    .stButton>button {
+        background-color: #004080 !important;
+        color: white !important;
+        border-radius: 6px !important;
+        padding: 8px 16px !important;
+        border: none !important;
+        font-weight: 600 !important;
+    }
+
+    .stButton>button:hover {
+        background-color: #003366 !important;
+        color: white !important;
+    }
+
+    /* DANGER BUTTONS (Remove, Clear Cart) */
+    .danger-btn>button {
+        background-color: #D9534F !important;
+        color: white !important;
+        border-radius: 6px !important;
+        padding: 6px 12px !important;
+        border: none !important;
+        font-weight: 600 !important;
+    }
+
+    .danger-btn>button:hover {
+        background-color: #C9302C !important;
+    }
+
+    /* LINK BUTTONS (Email, WhatsApp) */
+    .stLinkButton>a {
+        background-color: #004080 !important;
+        color: white !important;
+        padding: 8px 16px !important;
+        border-radius: 6px !important;
+        text-decoration: none !important;
+        font-weight: 600 !important;
+    }
+
+    .stLinkButton>a:hover {
+        background-color: #003366 !important;
+    }
+
+    /* FOOTER */
+    .footer {
+        text-align: center;
+        color: grey;
+        margin-top: 30px;
+        font-size: 13px;
+    }
+
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # PAGE CONFIG
