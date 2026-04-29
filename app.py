@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 # ---------------------------------------------------------
 # PAGE CONFIG
@@ -62,26 +63,57 @@ if "parts" not in st.session_state:
     st.session_state.parts = None
 
 # ---------------------------------------------------------
-# DATA LOADING (CSV ONLY)
+# DATA CLEANING HELPERS
+# ---------------------------------------------------------
+def clean_df(df):
+    df.columns = [c.strip() for c in df.columns]
+
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].astype(str).str.replace("\xa0", " ", regex=False)
+            df[col] = df[col].str.strip()
+
+    if "Brand" in df.columns:
+        df["Brand"] = df["Brand"].str.upper()
+
+    return df
+
+# ---------------------------------------------------------
+# LOAD CSV SAFELY
 # ---------------------------------------------------------
 @st.cache_data
 def load_parts_from_csv(path: str):
-    df = pd.read_csv(path)
-    # Normalize column names if needed
+    df = pd.read_csv(path, encoding="latin1", encoding_errors="ignore")
+    df = clean_df(df)
+
     rename_map = {}
     if "Manufacturing" in df.columns:
         rename_map["Manufacturing"] = "Manufacturing Part Number"
     if "Part Number" in df.columns and "OE Part Number" not in df.columns:
         rename_map["Part Number"] = "OE Part Number"
+
     if rename_map:
         df = df.rename(columns=rename_map)
+
+    required = [
+        "Brand", "Manufacturing Part Number", "Vehicle",
+        "OE Part Number", "Part Description", "Stock", "Unit Price (AED)"
+    ]
+
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    df["Stock"] = pd.to_numeric(df["Stock"], errors="coerce").fillna(0).astype(int)
+    df["Unit Price (AED)"] = pd.to_numeric(df["Unit Price (AED)"], errors="ignore")
+
     return df
 
 def get_parts_df():
     if st.session_state.parts is not None:
         return st.session_state.parts
     try:
-        df = load_parts_from_csv("parts_list.csv")  # your 50k+ CSV file
+        df = load_parts_from_csv("parts_list.csv")
         st.session_state.parts = df
         return df
     except Exception:
@@ -103,7 +135,7 @@ col_h1, col_h2 = st.columns([6, 2])
 with col_h1:
     st.markdown(
         "<div class='header-bar'>"
-        "<div class='header-title'>DYNATRade AUTOMOTIVE LLC</div>"
+        "<div class='header-title'>DYNATRADE AUTOMOTIVE LLC</div>"
         "<div class='header-subtitle'>Spare Parts Ordering Portal</div>"
         "</div>",
         unsafe_allow_html=True
@@ -132,10 +164,7 @@ def add_to_cart(selected_rows: pd.DataFrame):
     cart = st.session_state.cart.copy()
     for _, row in selected_rows.iterrows():
         key_cols = ["Brand", "Manufacturing Part Number", "Vehicle", "OE Part Number"]
-        if cart.empty:
-            mask = pd.Series([], dtype=bool)
-        else:
-            mask = (cart[key_cols] == row[key_cols]).all(axis=1)
+        mask = (cart[key_cols] == row[key_cols]).all(axis=1) if not cart.empty else pd.Series([], dtype=bool)
         if mask.any():
             idx = cart[mask].index[0]
             cart.loc[idx, "Qty"] += row["Qty"]
@@ -184,6 +213,7 @@ if mode == "Customer Portal":
 
         if clear_clicked:
             brand_filter = vehicle_filter = part_no_filter = desc_filter = ""
+
         if search_clicked:
             if brand_filter:
                 df = df[df["Brand"].astype(str).str.contains(brand_filter, case=False, na=False)]
@@ -216,9 +246,7 @@ if mode == "Customer Portal":
     with right:
         st.markdown("### Cart")
 
-        c_cart1, _ = st.columns([1, 1])
-        with c_cart1:
-            st.button("🗑 Clear Cart", on_click=clear_cart)
+        st.button("🗑 Clear Cart", on_click=clear_cart)
 
         cart_df = st.session_state.cart.copy()
         if cart_df.empty:
@@ -271,7 +299,12 @@ if mode == "Admin Portal":
         uploaded = st.file_uploader("Upload CSV file", type=["csv"])
         if uploaded is not None:
             try:
-                df_new = pd.read_csv(uploaded)
+                df_new = pd.read_csv(
+                    uploaded,
+                    encoding="latin1",
+                    encoding_errors="ignore"
+                )
+                df_new = clean_df(df_new)
                 st.session_state.parts = df_new
                 st.success(f"Uploaded and loaded {len(df_new):,} parts.")
             except Exception as e:
@@ -317,3 +350,4 @@ st.markdown(
     "<div class='footer'>© Dynatrade Automotive Group – B2B Customer Portal</div>",
     unsafe_allow_html=True
 )
+
