@@ -1,8 +1,10 @@
+# app.py
 import os
 import io
 import uuid
-import bcrypt
-import base64
+import hashlib
+import binascii
+import warnings
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -14,22 +16,59 @@ from cryptography.fernet import Fernet
 # CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="Dynatrade Automotive LLC", layout="wide")
-# Admin credentials default (override with env or st.secrets)
 ADMIN_USERNAME = os.environ.get("DYNATRADE_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.environ.get("DYNATRADE_ADMIN_PASS", "Dyn@1234")
 
-# Filenames for persistence
 AUDIT_LOG = "audit_log.csv"
 ORDERS_FILE = "orders.csv"
-META_FILE = "uploads_meta.csv"  # metadata for encrypted uploads
-USERS_DERIVED = "users_derived.csv"  # derived user table (bcrypt hashes)
+META_FILE = "uploads_meta.csv"
+USERS_DERIVED = "users_derived.csv"
 PARTS_ENC = "parts_list.enc"
 USERS_ENC = "users_list.enc"
 CAMPAIGNS_META = "campaigns_meta.csv"
 CAMPAIGNS_DIR = "campaigns_enc"
-
-# Ensure directories
 os.makedirs(CAMPAIGNS_DIR, exist_ok=True)
+
+# ---------------------------------------------------------
+# PASSWORD HASHING (resilient: bcrypt if available, else PBKDF2)
+# ---------------------------------------------------------
+try:
+    import bcrypt as _bcrypt  # optional; if present we'll use it
+    _BCRYPT_AVAILABLE = True
+except Exception:
+    _bcrypt = None
+    _BCRYPT_AVAILABLE = False
+    warnings.warn("bcrypt not available. Falling back to PBKDF2-HMAC (secure fallback).")
+
+def hash_password(password: str) -> str:
+    if _BCRYPT_AVAILABLE:
+        pw = password.encode()
+        hashed = _bcrypt.hashpw(pw, _bcrypt.gensalt())
+        return "bcrypt$" + hashed.decode()
+    else:
+        iterations = 200_000
+        salt = os.urandom(16)
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+        return f"pbkdf2${iterations}${binascii.hexlify(salt).decode()}${binascii.hexlify(dk).decode()}"
+
+def verify_password(password: str, stored: str) -> bool:
+    if stored.startswith("bcrypt$") and _BCRYPT_AVAILABLE:
+        try:
+            stored_hash = stored.split("$", 1)[1].encode()
+            return _bcrypt.checkpw(password.encode(), stored_hash)
+        except Exception:
+            return False
+    if stored.startswith("pbkdf2$"):
+        try:
+            _, iterations, salt_hex, hash_hex = stored.split("$")
+            iterations = int(iterations)
+            salt = binascii.unhexlify(salt_hex)
+            expected = binascii.unhexlify(hash_hex)
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+            return hashlib.compare_digest(dk, expected)
+        except Exception:
+            return False
+    return False
 
 # ---------------------------------------------------------
 # UTILITIES
@@ -98,7 +137,6 @@ def decrypt_bytes(token: bytes):
     return f.decrypt(token)
 
 def safe_read_excel_bytes(raw: bytes):
-    # Try to read excel from bytes; fallback to CSV read if possible
     try:
         return pd.read_excel(io.BytesIO(raw))
     except Exception:
@@ -116,6 +154,20 @@ def clean_df(df: pd.DataFrame):
     if "Brand" in df.columns:
         df["Brand"] = df["Brand"].str.upper()
     return df
+
+# Robust query param getter (handles environments where Streamlit API differs)
+def get_query_params_safe():
+    try:
+        return st.experimental_get_query_params()
+    except Exception:
+        try:
+            qs = os.environ.get("QUERY_STRING", "")
+            from urllib.parse import parse_qs
+            parsed = parse_qs(qs)
+            # convert to same shape as st.experimental_get_query_params (list values)
+            return {k: v for k, v in parsed.items()}
+        except Exception:
+            return {}
 
 # ---------------------------------------------------------
 # SESSION STATE INIT
@@ -138,7 +190,7 @@ if "customer_logged_in" not in st.session_state:
 if "customer_company" not in st.session_state:
     st.session_state.customer_company = ""
 if "campaigns_seen" not in st.session_state:
-    st.session_state.campaigns_seen = {}  # per-customer seen ids
+    st.session_state.campaigns_seen = {}
 
 # ---------------------------------------------------------
 # HEADER
@@ -170,11 +222,9 @@ st.markdown("<hr>", unsafe_allow_html=True)
 # ---------------------------------------------------------
 # NAVIGATION
 # ---------------------------------------------------------
-params = st.experimental_get_query_params()
-is_admin_url = params.get("admin", ["0"])[0] == "1"
+params = get_query_params_safe()
+is_admin_url = params.get("admin", ["0"])[0] == "1" if params else False
 mode = st.sidebar.radio("Select View", ["Customer Portal", "Admin Portal"])
-
-# If admin URL not present, hide admin option in sidebar
 if not is_admin_url and mode == "Admin Portal":
     st.sidebar.warning("Admin UI requires ?admin=1 in URL.")
     st.stop()
@@ -189,17 +239,14 @@ def load_parts_from_enc(enc_path: str):
     with open(enc_path, "rb") as fh:
         token = fh.read()
     raw = decrypt_bytes(token)
-    # try to parse as CSV or Excel
     try:
         df = safe_read_excel_bytes(raw)
     except Exception:
-        # fallback: try CSV with latin1
         try:
             df = pd.read_csv(io.BytesIO(raw), encoding="latin1", encoding_errors="ignore")
         except Exception as e:
             raise RuntimeError("Unable to parse decrypted parts file.") from e
     df = clean_df(df)
-    # normalize columns
     rename_map = {}
     if "Manufacturing" in df.columns:
         rename_map["Manufacturing"] = "Manufacturing Part Number"
@@ -213,7 +260,6 @@ def load_parts_from_enc(enc_path: str):
         raise ValueError(f"Missing required columns: {missing}")
     df["Stock"] = pd.to_numeric(df["Stock"], errors="coerce").fillna(0).astype(int)
     df["Unit Price (AED)"] = pd.to_numeric(df["Unit Price (AED)"], errors="coerce").fillna(0.0)
-    # create search_text for fast search
     df["search_text"] = (
         df["Brand"].fillna("") + " " +
         df["Manufacturing Part Number"].astype(str).fillna("") + " " +
@@ -235,7 +281,6 @@ def load_parts_if_exists():
             return None
     return None
 
-# Try to load parts at startup if present
 if st.session_state.parts is None:
     try:
         load_parts_if_exists()
@@ -294,7 +339,6 @@ def cart_totals():
 # ---------------------------------------------------------
 if mode == "Customer Portal":
     st.markdown("## Customer Portal")
-    # Customer login (simple username/password from derived users)
     if not st.session_state.customer_logged_in:
         st.markdown("### Customer Login")
         with st.form("cust_login", clear_on_submit=False):
@@ -302,17 +346,13 @@ if mode == "Customer Portal":
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Login")
             if submitted:
-                # load derived users if exists
                 if os.path.exists(USERS_DERIVED):
                     try:
                         users = pd.read_csv(USERS_DERIVED)
                         match = users[users["Username"].astype(str) == str(username)]
                         if not match.empty:
                             stored_hash = match.iloc[0]["PasswordHash"]
-                            try:
-                                ok = bcrypt.checkpw(password.encode(), stored_hash.encode())
-                            except Exception:
-                                ok = False
+                            ok = verify_password(password, stored_hash)
                             if ok:
                                 st.session_state.customer_logged_in = True
                                 st.session_state.customer_company = match.iloc[0].get("Customer Name","")
@@ -324,13 +364,12 @@ if mode == "Customer Portal":
                         else:
                             st.error("Invalid credentials.")
                             append_audit("login_failed", username, "user_not_found")
-                    except Exception as e:
+                    except Exception:
                         st.error("User database error.")
                 else:
                     st.error("No users available. Ask admin to upload user list.")
     else:
         st.markdown(f"### Welcome, **{st.session_state.customer_company}**")
-        # Notification bell for campaigns
         campaigns_meta = load_campaign_meta()
         active_campaigns = []
         if not campaigns_meta.empty:
@@ -354,7 +393,6 @@ if mode == "Customer Portal":
         else:
             st.markdown(f"<div style='text-align:right;font-size:18px;color:#6c757d;'>{bell}</div>", unsafe_allow_html=True)
 
-        # Single search box only
         query = st.text_input("Search Part Number / OE / Description / Brand / Vehicle", key="cust_search")
         if st.button("Search"):
             if not query or not query.strip():
@@ -365,16 +403,12 @@ if mode == "Customer Portal":
                 if parts is None:
                     st.error("No parts loaded. Ask admin to upload price list.")
                 else:
-                    # vectorized search on search_text
                     mask = parts["search_text"].str.contains(q, na=False)
                     results = parts[mask].copy()
                     append_audit("search", st.session_state.customer_company or "unknown", f"query={query};results={len(results)}")
                     if results.empty:
                         st.warning("No results found.")
-                        # log out-of-stock search event
                         append_audit("search_no_results", st.session_state.customer_company or "unknown", f"query={query}")
-                        # notify assigned salesman if available in users table
-                        # lookup salesman from users derived
                         if os.path.exists(USERS_DERIVED):
                             try:
                                 users = pd.read_csv(USERS_DERIVED)
@@ -385,7 +419,6 @@ if mode == "Customer Portal":
                             except Exception:
                                 pass
                     else:
-                        # show first 20 (per spec)
                         display = results.head(20).reset_index(drop=True)
                         cols = st.columns([1.2,2.4,1.2,1.2,1.0,0.8,0.8,0.6,0.6])
                         headers = ["Brand","Part Description","Manufacturing PN","OE PN","Vehicle","Stock","Unit Price (AED)","Qty","Add"]
@@ -412,7 +445,6 @@ if mode == "Customer Portal":
                                 else:
                                     add_to_cart_row(row.to_dict(), int(qty_val))
                                     st.success(f"Added {int(qty_val)} x {row.get('Manufacturing Part Number','')} to cart.")
-        # show cart
         st.markdown("### Your Cart")
         if st.button("Clear Cart"):
             clear_cart()
@@ -420,7 +452,6 @@ if mode == "Customer Portal":
         if cart.empty:
             st.info("Cart is empty.")
         else:
-            # render cart rows with remove
             for idx, r in cart.iterrows():
                 cols = st.columns([1.2,2.4,1.2,1.2,1.0,0.8,0.8,0.6,0.6])
                 cols[0].write(r["Brand"])
@@ -437,7 +468,6 @@ if mode == "Customer Portal":
             items, total = cart_totals()
             st.markdown(f"**Items: {items} | Cart Total: AED {total:,.2f}**")
             st.download_button("Download Cart (Excel)", cart.to_csv(index=False), "cart.csv")
-            # order submission (simple)
             notes = st.text_area("Order Notes (optional)")
             if st.button("Submit Order"):
                 order_id = str(uuid.uuid4())[:8].upper()
@@ -458,7 +488,6 @@ if mode == "Customer Portal":
                     "items_count": len(items_list), "order_total_aed": order_total,
                     "notes": notes, "items_serialized": str(items_list)
                 }
-                # append to orders file
                 try:
                     if os.path.exists(ORDERS_FILE):
                         odf = pd.read_csv(ORDERS_FILE)
@@ -471,7 +500,6 @@ if mode == "Customer Portal":
                 append_audit("order_submitted", customer, f"order_id={order_id};total={order_total}")
                 clear_cart()
                 st.success(f"Order {order_id} submitted. Prepare email to sales.")
-                # prepare mailto
                 body_lines = [f"Order ID: {order_id}", f"Customer: {customer}", f"Total AED: {order_total:,.2f}", "", "Items:"]
                 for it in items_list:
                     body_lines.append(f"{it['Manufacturing Part Number']} | {it['Part Description']} | Qty {it['Qty']} | AED {it['Total (AED)']:.2f}")
@@ -488,7 +516,6 @@ if mode == "Customer Portal":
 # ---------------------------------------------------------
 if mode == "Admin Portal":
     st.markdown("## Admin Portal")
-    # require admin login
     if not st.session_state.admin_logged_in:
         st.markdown("### Admin Login")
         with st.form("admin_login", clear_on_submit=False):
@@ -511,12 +538,10 @@ if mode == "Admin Portal":
             uploaded = st.file_uploader("Upload parts file (.xlsx/.xls/.csv)", type=["xlsx","xls","csv"])
             if uploaded is not None:
                 raw = uploaded.read()
-                # attempt to parse for validation
                 parsed_ok = False
                 try:
                     df_try = safe_read_excel_bytes(raw)
                     df_try = clean_df(df_try)
-                    # normalize
                     rename_map = {}
                     if "Manufacturing" in df_try.columns:
                         rename_map["Manufacturing"] = "Manufacturing Part Number"
@@ -530,25 +555,21 @@ if mode == "Admin Portal":
                         st.error(f"Missing required columns: {missing}. File will still be encrypted and stored.")
                     else:
                         parsed_ok = True
-                except Exception as e:
+                except Exception:
                     st.warning("Could not parse uploaded file for validation (Excel engine may be missing). File will still be encrypted and stored.")
-                # encrypt and store .enc
                 try:
                     token = encrypt_bytes(raw)
                     with open(PARTS_ENC, "wb") as fh:
                         fh.write(token)
-                    # metadata
                     meta = load_meta()
                     row = {"id": str(uuid.uuid4()), "type":"parts", "filename_enc": PARTS_ENC, "uploaded_by": ADMIN_USERNAME, "uploaded_at_uae": now_uae_iso()}
                     meta = pd.concat([meta, pd.DataFrame([row])], ignore_index=True) if not meta.empty else pd.DataFrame([row])
                     save_meta(meta)
                     st.success("Parts file encrypted and stored.")
                     append_audit("upload_parts", ADMIN_USERNAME, f"parsed_ok={parsed_ok}")
-                    # if parsed_ok, update in-memory parts and version
                     if parsed_ok:
                         try:
                             df_new = clean_df(df_try)
-                            # normalize numeric
                             df_new["Stock"] = pd.to_numeric(df_new["Stock"], errors="coerce").fillna(0).astype(int)
                             df_new["Unit Price (AED)"] = pd.to_numeric(df_new["Unit Price (AED)"], errors="coerce").fillna(0.0)
                             df_new["search_text"] = (
@@ -582,33 +603,24 @@ if mode == "Admin Portal":
                         parsed_ok = True
                 except Exception:
                     st.warning("Could not parse users file for validation. File will still be encrypted and stored.")
-                # encrypt and store
                 try:
                     token = encrypt_bytes(raw)
                     with open(USERS_ENC, "wb") as fh:
                         fh.write(token)
-                    # metadata
                     meta = load_meta()
                     row = {"id": str(uuid.uuid4()), "type":"users", "filename_enc": USERS_ENC, "uploaded_by": ADMIN_USERNAME, "uploaded_at_uae": now_uae_iso()}
                     meta = pd.concat([meta, pd.DataFrame([row])], ignore_index=True) if not meta.empty else pd.DataFrame([row])
                     save_meta(meta)
                     st.success("Users file encrypted and stored.")
                     append_audit("upload_users", ADMIN_USERNAME, f"parsed_ok={parsed_ok}")
-                    # if parsed_ok, derive users_derived with bcrypt hashes
                     if parsed_ok:
                         try:
                             dfu2 = dfu.copy()
-                            # hash passwords
-                            def hash_pw(pw):
-                                try:
-                                    return bcrypt.hashpw(str(pw).encode(), bcrypt.gensalt()).decode()
-                                except Exception:
-                                    return ""
-                            dfu2["PasswordHash"] = dfu2["Password"].apply(hash_pw)
+                            dfu2["PasswordHash"] = dfu2["Password"].apply(lambda p: hash_password(str(p)))
                             derived = dfu2[["Username","PasswordHash","Customer Name","Customer Code","Max search per day","Customer email ID","Sales Man name","Salesman contact no.","Salesman Email ID"]].copy()
                             derived.to_csv(USERS_DERIVED, index=False)
-                            st.success("Derived users table created with bcrypt password hashes.")
-                        except Exception as e:
+                            st.success("Derived users table created with password hashes.")
+                        except Exception:
                             st.error("Failed to create derived users table.")
                 except Exception as e:
                     st.error(f"Encryption failed: {e}")
@@ -628,7 +640,6 @@ if mode == "Admin Portal":
                         enc_name = os.path.join(CAMPAIGNS_DIR, f"{cid}.enc")
                         with open(enc_name, "wb") as fh:
                             fh.write(token)
-                        # metadata
                         cm = load_campaign_meta()
                         row = {"id": cid, "name": camp_name, "filename_enc": enc_name, "uploaded_by": ADMIN_USERNAME, "uploaded_at_uae": now_uae_iso(), "valid_to": datetime.combine(valid_to, datetime.min.time()).isoformat()}
                         cm = pd.concat([cm, pd.DataFrame([row])], ignore_index=True) if not cm.empty else pd.DataFrame([row])
@@ -649,7 +660,6 @@ if mode == "Admin Portal":
             else:
                 st.write(f"Total parts in memory: {len(st.session_state.parts):,}")
                 st.dataframe(st.session_state.parts.head(100), use_container_width=True)
-            # show last updated time from meta
             meta = load_meta()
             if not meta.empty:
                 parts_meta = meta[meta["type"]=="parts"]
@@ -686,5 +696,3 @@ if mode == "Admin Portal":
 # ---------------------------------------------------------
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center;color:#6c757d;'>© Dynatrade Automotive Group – B2B Customer Portal</div>", unsafe_allow_html=True)
-
-
