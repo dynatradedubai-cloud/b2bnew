@@ -8,7 +8,7 @@ import warnings
 import pandas as pd
 import numpy as np
 import streamlit as st
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from cryptography.fernet import Fernet
 
@@ -155,7 +155,7 @@ def clean_df(df: pd.DataFrame):
         df["Brand"] = df["Brand"].str.upper()
     return df
 
-# Robust query param getter (handles environments where Streamlit API differs)
+# Robust query param getter (safe across environments)
 def get_query_params_safe():
     try:
         return st.experimental_get_query_params()
@@ -164,7 +164,6 @@ def get_query_params_safe():
             qs = os.environ.get("QUERY_STRING", "")
             from urllib.parse import parse_qs
             parsed = parse_qs(qs)
-            # convert to same shape as st.experimental_get_query_params (list values)
             return {k: v for k, v in parsed.items()}
         except Exception:
             return {}
@@ -191,6 +190,8 @@ if "customer_company" not in st.session_state:
     st.session_state.customer_company = ""
 if "campaigns_seen" not in st.session_state:
     st.session_state.campaigns_seen = {}
+if "_force_admin_view" not in st.session_state:
+    st.session_state._force_admin_view = False
 
 # ---------------------------------------------------------
 # HEADER
@@ -220,14 +221,27 @@ with col3:
 st.markdown("<hr>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# NAVIGATION
+# NAVIGATION and Admin gating
 # ---------------------------------------------------------
 params = get_query_params_safe()
-is_admin_url = params.get("admin", ["0"])[0] == "1" if params else False
-mode = st.sidebar.radio("Select View", ["Customer Portal", "Admin Portal"])
-if not is_admin_url and mode == "Admin Portal":
-    st.sidebar.warning("Admin UI requires ?admin=1 in URL.")
-    st.stop()
+is_admin_url = False
+if params:
+    val = params.get("admin")
+    if isinstance(val, list):
+        is_admin_url = val[0] == "1"
+    else:
+        is_admin_url = str(val) == "1"
+
+# Force admin view when admin query param present
+if is_admin_url:
+    st.session_state._force_admin_view = True
+
+# Render sidebar radio with admin first when forced
+if st.session_state.get("_force_admin_view", False):
+    mode = st.sidebar.radio("Select View", ["Admin Portal", "Customer Portal"], index=0)
+    mode = "Admin Portal" if mode == "Admin Portal" else "Customer Portal"
+else:
+    mode = st.sidebar.radio("Select View", ["Customer Portal", "Admin Portal"])
 
 # ---------------------------------------------------------
 # PARTS LOADING (decrypt in memory and parse if possible)
@@ -335,7 +349,7 @@ def cart_totals():
     return items, total
 
 # ---------------------------------------------------------
-# CUSTOMER PORTAL
+# CUSTOMER PORTAL (render only when mode == Customer Portal)
 # ---------------------------------------------------------
 if mode == "Customer Portal":
     st.markdown("## Customer Portal")
@@ -512,7 +526,7 @@ if mode == "Customer Portal":
                 st.markdown(f"[Open email to Sales]({mailto})")
 
 # ---------------------------------------------------------
-# ADMIN PORTAL (gated by ?admin=1)
+# ADMIN PORTAL (render only when mode == Admin Portal)
 # ---------------------------------------------------------
 if mode == "Admin Portal":
     st.markdown("## Admin Portal")
@@ -530,7 +544,7 @@ if mode == "Admin Portal":
                 else:
                     st.error("Invalid admin credentials.")
                     append_audit("admin_login_failed", username, "invalid_credentials")
-        st.markdown("<div style='font-size:12px;color:#6c757d;'>Admin UI requires ?admin=1 in URL. Use environment variables for credentials.</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:12px;color:#6c757d;'>Admin UI requires ?admin=1 in URL or use the sidebar. Use environment variables for credentials.</div>", unsafe_allow_html=True)
     else:
         tabs = st.tabs(["Upload / Manage", "View Parts", "Audit & Campaigns"])
         with tabs[0]:
